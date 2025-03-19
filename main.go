@@ -12,17 +12,10 @@ func main() {
 	db := database.InitDB()
 	defer db.Close()
 
-	//Get all users
-	http.HandleFunc("/users", routes.HandleUsers(db))
-	// Register routes
-	http.HandleFunc("/register", routes.HandleRegister(db))
-	// Login route
-	http.HandleFunc("/login", routes.HandleLogin(db))
-
-	//update user
-	http.HandleFunc("/update_user", routes.HandleUpdateUser(db))
+	// Setup router
+	router := routes.SetupRoutes(db)
 
 	// Start the server
 	log.Println("Server running on http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", router))
 }

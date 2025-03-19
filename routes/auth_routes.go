@@ -6,47 +6,60 @@ import (
 	"fmt"
 	"golang_projects/model"
 	"golang_projects/repository"
+	utils "golang_projects/utility"
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Response defines the structure for both success and error messages
-type Response struct {
-	Status  bool        `json:"status"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
-}
-
-type UpdateUserRequest struct {
-	Name  *string `json:"name,omitempty"`
-	Email *string `json:"email,omitempty"`
-	// Add other fields as needed
-}
-
 // HandleRegister handles user registration
 func HandleRegister(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			writeJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+			utils.WriteJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
 			return
 		}
 
 		var user model.User
-		err := json.NewDecoder(r.Body).Decode(&user)
-		if err != nil {
-			writeJSONResponse(w, http.StatusBadRequest, false, "Invalid request body", nil)
-			log.Printf("Register decode error: %v", err)
+
+		// Determine Content-Type and parse accordingly
+		contentType := r.Header.Get("Content-Type")
+		if strings.Contains(contentType, "application/json") {
+			// Parse JSON raw data
+			err := json.NewDecoder(r.Body).Decode(&user)
+			if err != nil {
+				utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Invalid JSON request body", nil)
+				log.Printf("Register JSON decode error: %v", err)
+				return
+			}
+		} else if strings.Contains(contentType, "application/x-www-form-urlencoded") || strings.Contains(contentType, "multipart/form-data") {
+			// Parse Form data
+			err := r.ParseMultipartForm(10 << 20) // Max memory 10 MB
+			if err != nil {
+				utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Failed to parse form data", nil)
+				log.Printf("Form data parse error: %v", err)
+				return
+			}
+
+			// Assign form values to user
+			user.Name = r.Form.Get("name")
+			user.Email = r.Form.Get("email")
+			user.Password = r.Form.Get("password")
+			user.Phone = r.Form.Get("phone")
+			user.Address = r.Form.Get("address")
+		} else {
+			utils.WriteJSONResponse(w, http.StatusUnsupportedMediaType, false, "Unsupported content type", nil)
 			return
 		}
 
 		// Validate user input
 		if err := validateUser(user, true); err != nil {
-			writeJSONResponse(w, http.StatusBadRequest, false, err.Error(), nil)
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, err.Error(), nil)
 			log.Printf("Validation error: %v", err)
 			return
 		}
@@ -54,7 +67,7 @@ func HandleRegister(db *sql.DB) http.HandlerFunc {
 		// Hash the password
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Failed to hash password", nil)
+			utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to hash password", nil)
 			log.Printf("Hash password error: %v", err)
 			return
 		}
@@ -63,24 +76,14 @@ func HandleRegister(db *sql.DB) http.HandlerFunc {
 		// Save user to the database
 		err = repository.CreateUser(db, user)
 		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Failed to register user", nil)
+			utils.WriteJSONResponse(w, http.StatusInternalServerError, false, err.Error(), nil)
 			log.Printf("Register insert error: %v", err)
 			return
 		}
 
 		// Success response
-		writeJSONResponse(w, http.StatusCreated, true, "User registered successfully", nil)
+		utils.WriteJSONResponse(w, http.StatusCreated, true, "User registered successfully", nil)
 	}
-}
-
-func writeJSONResponse(w http.ResponseWriter, statusCode int, status bool, message string, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(Response{
-		Status:  status,
-		Message: message,
-		Data:    data,
-	})
 }
 
 // validateUser validates the user input
@@ -132,7 +135,7 @@ func containsSpecialChar(s string) bool {
 func HandleLogin(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			writeJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+			utils.WriteJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
 			return
 		}
 
@@ -140,32 +143,37 @@ func HandleLogin(db *sql.DB) http.HandlerFunc {
 			Email    string `json:"email"`
 			Password string `json:"password"`
 		}
+
 		err := json.NewDecoder(r.Body).Decode(&credentials)
 		if err != nil {
-			writeJSONResponse(w, http.StatusMethodNotAllowed, false, "Invalid request body", nil)
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Invalid request body", nil)
 			return
 		}
 
-		err = validateUser(model.User{Email: credentials.Email, Password: credentials.Password}, false)
+		// Retrieve user from DB
+		user, err := repository.GetUserLogin(db, credentials.Email)
 		if err != nil {
-			writeJSONResponse(w, http.StatusBadRequest, false, err.Error(), nil)
-			log.Printf("Validation error: %v", err)
+			log.Printf("User not found: %v", err)
+			utils.WriteJSONResponse(w, http.StatusUnauthorized, false, "Invalid email or password", nil)
 			return
 		}
 
-		// Retrieve user from the database
-		user, err := repository.GetUserByEmail(db, credentials.Email)
-		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Invalid password or email", nil)
-			log.Printf("Login fetch error: %v", err)
-			return
-		}
+		// Log the retrieved user details for debugging
+		log.Printf("Retrieved User: %+v", user)
 
-		// Compare passwords
+		// Check if the password matches
 		err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(credentials.Password))
 		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Provided password is incorrect", nil)
-			log.Printf("Login password mismatch: %v", err)
+			log.Printf("Password mismatch: %v", err)
+			utils.WriteJSONResponse(w, http.StatusUnauthorized, false, "Invalid email or password", nil)
+			return
+		}
+
+		// Generate JWT token
+		token, err := utils.GenerateJWT(user.ID)
+		if err != nil {
+			log.Printf("JWT generation error: %v", err)
+			utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to generate token", nil)
 			return
 		}
 
@@ -174,108 +182,151 @@ func HandleLogin(db *sql.DB) http.HandlerFunc {
 			ID    int    `json:"id"`
 			Name  string `json:"name"`
 			Email string `json:"email"`
+			Token string `json:"access_token"`
 		}{
 			ID:    user.ID,
 			Name:  user.Name,
 			Email: user.Email,
+			Token: token,
 		}
 
-		// writeJSONResponse(w, http.StatusOK, true, "User logged in successfully")
-		writeJSONResponse(w, http.StatusOK, true, "User logged in successfully", response)
-		log.Printf("User logged in successfully")
-
+		utils.WriteJSONResponse(w, http.StatusOK, true, "Login successful", response)
 	}
-
 }
 
 // update User by ID
 // HandleUpdateUser handles updating user fields
+// HandleUpdateUser handles updating user fields using the repository pattern
 func HandleUpdateUser(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut && r.Method != http.MethodPatch {
-			writeJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+			utils.WriteJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
 			return
 		}
 
-		// Extract user ID from URL or request context
-		// This example assumes the user ID is passed as a query parameter
-		// Adjust according to your routing setup (e.g., using URL parameters)
+		// Get user ID from query parameters
 		userIDStr := r.URL.Query().Get("id")
 		if userIDStr == "" {
-			writeJSONResponse(w, http.StatusBadRequest, false, "User ID is required", nil)
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "User ID is required", nil)
 			return
 		}
 
 		// Convert userIDStr to integer
-		var userID int
-		_, err := fmt.Sscanf(userIDStr, "%d", &userID)
+		userID, err := strconv.Atoi(userIDStr)
 		if err != nil {
-			writeJSONResponse(w, http.StatusBadRequest, false, "Invalid User ID", nil)
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Invalid User ID", nil)
 			log.Printf("Invalid User ID: %v", err)
 			return
 		}
 
-		var updateReq UpdateUserRequest
+		var updateReq model.User
 		err = json.NewDecoder(r.Body).Decode(&updateReq)
 		if err != nil {
-			writeJSONResponse(w, http.StatusBadRequest, false, "Invalid request body", nil)
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Invalid request body", nil)
 			log.Printf("Update decode error: %v", err)
 			return
 		}
 
-		// validate update request fields
-		if updateReq.Name != nil && len(*updateReq.Name) < 3 {
-			writeJSONResponse(w, http.StatusBadRequest, false, "Name must be at least 3 characters long", nil)
+		// Create a map for fields to update
+		updateFields := make(map[string]interface{})
+
+		// Validate and add fields to update
+		if updateReq.Name != "" && len(updateReq.Name) < 3 {
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Name must be at least 3 characters long", nil)
+			return
+		}
+		if updateReq.Name != "" {
+			updateFields["name"] = updateReq.Name
+		}
+
+		if updateReq.Email != "" {
+			updateFields["email"] = updateReq.Email
+		}
+
+		if updateReq.Phone != "" {
+			updateFields["phone"] = updateReq.Phone
+		}
+
+		if updateReq.Address != "" {
+			updateFields["address"] = updateReq.Address
+		}
+
+		// Check if password is being updated
+		if updateReq.Password != "" {
+			// Hash the new password
+			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(updateReq.Password), bcrypt.DefaultCost)
+			if err != nil {
+				utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to hash password", nil)
+				log.Printf("Hash password error: %v", err)
+				return
+			}
+			updateFields["password"] = string(hashedPassword)
+		}
+
+		// If no fields to update, return an error
+		if len(updateFields) == 0 {
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "No fields to update", nil)
 			return
 		}
 
-		// Prepare fields to update
-		setClauses := []string{}
-		args := []interface{}{}
-
-		if updateReq.Name != nil {
-			setClauses = append(setClauses, "name = ?")
-			args = append(args, *updateReq.Name)
-		}
-
-		if updateReq.Email != nil {
-			setClauses = append(setClauses, "email = ?")
-			args = append(args, *updateReq.Email)
-		}
-
-		if len(setClauses) == 0 {
-			writeJSONResponse(w, http.StatusBadRequest, false, "No fields to update", nil)
-			return
-		}
-
-		// Build the final SQL query
-		query := fmt.Sprintf("UPDATE users SET %s WHERE id = ?", strings.Join(setClauses, ", "))
-		args = append(args, userID)
-
-		// Execute the update
-		res, err := db.Exec(query, args...)
+		// Use repository to update the user
+		rowsAffected, err := repository.UpdateUserByID(db, userID, updateFields)
 		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Failed to update user", nil)
+			utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to update user", nil)
 			log.Printf("Update user error: %v", err)
 			return
 		}
 
-		// Check if any row was affected
-		rowsAffected, err := res.RowsAffected()
-		if err != nil {
-			writeJSONResponse(w, http.StatusInternalServerError, false, "Failed to retrieve update result", nil)
-			log.Printf("RowsAffected error: %v", err)
-			return
-		}
-
 		if rowsAffected == 0 {
-			writeJSONResponse(w, http.StatusNotFound, false, "User not found", nil)
+			utils.WriteJSONResponse(w, http.StatusNotFound, false, "User not found", nil)
 			log.Printf("No user found with ID: %d", userID)
 			return
 		}
 
 		// Success response
-		writeJSONResponse(w, http.StatusOK, true, "User updated successfully", nil)
+		utils.WriteJSONResponse(w, http.StatusOK, true, "User updated successfully", nil)
 		log.Printf("User with ID %d updated successfully", userID)
+	}
+}
+
+func HandleDeleteUser(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			utils.WriteJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
+			return
+		}
+
+		// Get user ID from query parameters
+		userIDStr := r.URL.Query().Get("id")
+		if userIDStr == "" {
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "User ID is required", nil)
+			return
+		}
+
+		// Convert userIDStr to integer
+		userID, err := strconv.Atoi(userIDStr)
+		if err != nil {
+			utils.WriteJSONResponse(w, http.StatusBadRequest, false, "Invalid User ID", nil)
+			log.Printf("Invalid User ID: %v", err)
+			return
+		}
+
+		// Use repository to delete the user
+		rowsAffected, err := repository.DeleteUserByID(db, userID)
+		if err != nil {
+			utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to delete user", nil)
+			log.Printf("Delete user error: %v", err)
+			return
+		}
+
+		if rowsAffected == 0 {
+			utils.WriteJSONResponse(w, http.StatusNotFound, false, "User not found", nil)
+			log.Printf("No user found with ID: %d", userID)
+			return
+		}
+
+		// Success response
+		utils.WriteJSONResponse(w, http.StatusOK, true, "User deleted successfully", nil)
+		log.Printf("User with ID %d deleted successfully", userID)
 	}
 }

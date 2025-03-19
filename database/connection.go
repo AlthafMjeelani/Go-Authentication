@@ -14,12 +14,16 @@ func InitDB() *sql.DB {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Create table if it doesn't exist
+	// Create table with additional fields if it doesn't exist
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
-		email TEXT NOT NULL,
-		password TEXT NOT NULL
+		email TEXT NOT NULL UNIQUE,
+		password TEXT NOT NULL,
+		phone TEXT,
+		address TEXT,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 	if err != nil {
 		log.Fatalf("Failed to create table: %v", err)
