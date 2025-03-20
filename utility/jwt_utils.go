@@ -2,12 +2,13 @@ package utils
 
 import (
 	"errors"
-	"time"	
+	"time"
+
 	"github.com/golang-jwt/jwt/v5"
 )
 
-
 var jwtSecret = []byte("a3d5f8u4n1m9p0z6w7x2q4t8v3b1y9r0")
+
 // Change this to a strong secret key
 
 // GenerateJWT generates a new JWT token

@@ -2,7 +2,6 @@ package routes
 
 import (
 	"database/sql"
-	"fmt"
 	"golang_projects/repository"
 	utils "golang_projects/utility"
 	"log"
@@ -12,11 +11,17 @@ import (
 // HandleUsers handles user-related API requests
 func HandleUsers(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getUsers(db, w)
-		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		if r.Method == http.MethodGet {
+			users, err := repository.GetAllUsers(db)
+			if err != nil {
+				utils.WriteJSONResponse(w, http.StatusInternalServerError, false, "Failed to fetch users", nil)
+				log.Printf("GetUsers error: %v", err)
+				return
+			}
+			utils.WriteJSONResponse(w, http.StatusOK, true, "Success", users)
+			return
+		} else {
+			utils.WriteJSONResponse(w, http.StatusMethodNotAllowed, false, "Method not allowed", nil)
 		}
 	}
 }
@@ -39,15 +44,3 @@ func HandleGetUserByEmail(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-// Get all users
-func getUsers(db *sql.DB, w http.ResponseWriter) {
-	users, err := repository.GetAllUsers(db)
-	if err != nil {
-		fmt.Println(err)
-		http.Error(w, "Failed to fetch users", http.StatusInternalServerError)
-		log.Printf("GetUsers error: %v", err)
-		return
-	}
-
-	utils.WriteJSONResponse(w, http.StatusOK, true, "Success", users)
-}
